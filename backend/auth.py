@@ -25,7 +25,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     """Create a JWT access token"""
     to_encode = data.copy()
     access_token_expire_minutes = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
-    secret_key = os.getenv("SECRET_KEY", "073d09b4bf0440eff8f6a322fce7117e3ef427ac0b3d73044798e3b0c0e68eb6")
+    secret_key = os.getenv("SECRET_KEY")
     algorithm = os.getenv("ALGORITHM", "HS256")
     
     if expires_delta:
