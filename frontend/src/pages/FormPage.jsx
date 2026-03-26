@@ -1,11 +1,24 @@
 // src/pages/FormPage.jsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
+import { profileAPI } from "../api";
+import { useAuth } from "../context/AuthContext";
 
 export default function FormPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
   const [step, setStep] = useState(1);
+
+  // Redirect if not authenticated
+  useEffect(() => {
+    if (!user) {
+      navigate('/');
+    }
+  }, [user, navigate]);
+
   const [formData, setFormData] = useState({
     // Personal Info
     name: "",
@@ -63,11 +76,44 @@ export default function FormPage() {
     }
   };
 
-  const handleSubmit = () => {
-    console.log("Form submitted:", formData);
-    // Save to localStorage and navigate to dashboard
-    localStorage.setItem("userProfile", JSON.stringify(formData));
-    navigate("/dashboard");
+  const handleSubmit = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      // Convert emergency fund values
+      const emergencyFundMap = {
+        "none": 0,
+        "one": 1,
+        "three": 3,
+        "six": 6,
+        "twelve": 12
+      };
+
+      // Transform frontend camelCase data to backend snake_case
+      const backendData = {
+        name: formData.name,
+        age: parseInt(formData.age),
+        annual_income: parseFloat(formData.currentIncome) || 0,
+        monthly_expenses: parseFloat(formData.monthlyExpenses) || 0,
+        current_savings: 0, // Not in form yet
+        current_investments: parseFloat(formData.existingInvestments) || 0,
+        debt: parseFloat(formData.loans === "yes" ? formData.monthlyExpenses : 0) || 0,
+        risk_profile: formData.riskProfile,
+        investment_experience: formData.investmentExperience,
+        life_goals: formData.lifeGoals || formData.financialGoals.join(", "),
+        emergency_fund_months: emergencyFundMap[formData.emergencyFund] || 6,
+      };
+
+      await profileAPI.create(backendData);
+      localStorage.setItem("userProfile", JSON.stringify(formData));
+      navigate("/dashboard");
+    } catch (err) {
+      setError(err.message || "Failed to save profile");
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const progressPercentage = (step / 4) * 100;
@@ -90,6 +136,13 @@ export default function FormPage() {
             ></div>
           </div>
         </div>
+
+        {/* Error Message */}
+        {error && (
+          <div className="mb-6 p-4 bg-red-900/20 border border-red-500 rounded text-red-300 text-sm">
+            {error}
+          </div>
+        )}
 
         {/* Form Container */}
         <div className="card mb-8 min-h-96">
@@ -418,9 +471,10 @@ export default function FormPage() {
           ) : (
             <button
               onClick={handleSubmit}
-              className="btn-primary flex-1"
+              disabled={loading}
+              className="btn-primary flex-1 disabled:opacity-50"
             >
-              Complete Profile →
+              {loading ? 'Saving...' : 'Complete Profile →'}
             </button>
           )}
         </div>

@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Home from "./pages/Home";
+import LoginPage from "./pages/LoginPage";
 import Dashboard from "./pages/Dashboard";
 import FormPage from "./pages/FormPage";
 import FirePlanner from "./pages/FirePlanner";
@@ -9,6 +10,7 @@ import MFXray from "./pages/MFXray";
 import LifeEvent from "./pages/LifeEvent";
 import CoupleePlanner from "./pages/CoupleePlanner";
 import Articles from "./pages/Articles";
+import APITest from "./pages/APITest";
 
 export default function App() {
   return (
@@ -16,6 +18,7 @@ export default function App() {
       <div className="bg-gradient-midnight min-h-screen text-white">
         <Routes>
           <Route path="/" element={<Home />} />
+          <Route path="/login" element={<LoginPage />} />
           <Route path="/form" element={<FormPage />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/fire-planner" element={<FirePlanner />} />
@@ -25,6 +28,7 @@ export default function App() {
           <Route path="/life-event" element={<LifeEvent />} />
           <Route path="/couple-planner" element={<CoupleePlanner />} />
           <Route path="/articles" element={<Articles />} />
+          <Route path="/api-test" element={<APITest />} />
         </Routes>
       </div>
     </BrowserRouter>

@@ -81,13 +81,13 @@ export default function Navbar() {
           {/* CTA Buttons */}
           <div className="hidden md:flex items-center gap-4">
             <button
-              onClick={() => navigate("/form")}
+              onClick={() => navigate("/login")}
               className="btn-secondary text-sm"
             >
               Sign In
             </button>
             <button
-              onClick={() => navigate("/form")}
+              onClick={() => navigate("/login")}
               className="btn-primary text-sm"
             >
               Get Started
@@ -152,10 +152,10 @@ export default function Navbar() {
               Articles
             </button>
             <div className="flex gap-3 pt-4">
-              <button onClick={() => navigate("/form")} className="btn-secondary text-sm flex-1">
+              <button onClick={() => navigate("/login")} className="btn-secondary text-sm flex-1">
                 Sign In
               </button>
-              <button onClick={() => navigate("/form")} className="btn-primary text-sm flex-1">
+              <button onClick={() => navigate("/login")} className="btn-primary text-sm flex-1">
                 Get Started
               </button>
             </div>

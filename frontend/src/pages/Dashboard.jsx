@@ -1,18 +1,44 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
+import { profileAPI } from "../api";
+import { useAuth } from "../context/AuthContext";
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [userProfile, setUserProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState("overview");
 
   useEffect(() => {
-    const profile = localStorage.getItem("userProfile");
-    if (profile) {
-      setUserProfile(JSON.parse(profile));
-    }
-  }, []);
+    const fetchProfile = async () => {
+      if (!user) {
+        navigate('/');
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const profile = await profileAPI.get();
+        setUserProfile(profile);
+        localStorage.setItem("userProfile", JSON.stringify(profile));
+      } catch (err) {
+        // Fallback to localStorage if API fails
+        const cached = localStorage.getItem("userProfile");
+        if (cached) {
+          setUserProfile(JSON.parse(cached));
+        } else {
+          setError(err.message || "Failed to load profile");
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchProfile();
+  }, [user, navigate]);
 
   // Mock data - in production, this comes from AI backend
   const moneyHealthScore = {

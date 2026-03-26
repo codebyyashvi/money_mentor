@@ -1,8 +1,23 @@
 import Navbar from "../components/Navbar";
 import { useNavigate } from "react-router-dom";
+import { useState } from "react";
+import { useAuth } from "../context/AuthContext";
+import AuthModal from "../components/AuthModal";
 
 export default function Home() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [redirectTo, setRedirectTo] = useState('/form');
+
+  const handleFeatureClick = (path) => {
+    if (!user) {
+      setRedirectTo(path);
+      setShowAuthModal(true);
+    } else {
+      navigate(path);
+    }
+  };
 
   const features = [
     {
@@ -91,13 +106,13 @@ export default function Home() {
 
               <div className="flex flex-col sm:flex-row gap-4 mb-12">
                 <button
-                  onClick={() => navigate("/form")}
+                  onClick={() => handleFeatureClick("/form")}
                   className="btn-primary text-lg font-semibold"
                 >
                   Start Free Assessment → 
                 </button>
                 <button
-                  onClick={() => navigate("/dashboard")}
+                  onClick={() => handleFeatureClick("/dashboard")}
                   className="btn-outline text-lg font-semibold"
                 >
                   View Dashboard
@@ -173,7 +188,7 @@ export default function Home() {
           {features.map((feature, idx) => (
             <div
               key={feature.id}
-              onClick={() => navigate(feature.path)}
+              onClick={() => handleFeatureClick(feature.path)}
               className="card cursor-pointer group hover:border-primary-400 overflow-hidden"
               style={{ animationDelay: `${idx * 100}ms` }}
             >
@@ -239,7 +254,7 @@ export default function Home() {
             Join thousands of Indians building wealth with confidence. Get your Money Health Score today.
           </p>
           <button
-            onClick={() => navigate("/form")}
+            onClick={() => handleFeatureClick("/form")}
             className="btn-primary text-lg font-semibold"
           >
             Start Your Free Assessment Now
@@ -290,6 +305,9 @@ export default function Home() {
           </div>
         </div>
       </footer>
+
+      {/* Auth Modal */}
+      <AuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} redirectTo={redirectTo} />
     </div>
   );
 }
