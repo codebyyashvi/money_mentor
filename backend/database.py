@@ -13,7 +13,7 @@ class MongoDB:
 
 async def connect_db():
     """Connect to MongoDB"""
-    mongodb_url = os.getenv("MONGODB_URL", "mongodb+srv://Ranu:ranu@cluster0.iwtsa.mongodb.net/")
+    mongodb_url = os.getenv("MONGODB_URL")
     database_name = os.getenv("DATABASE_NAME", "money_mentor")
     MongoDB.client = AsyncIOMotorClient(mongodb_url)
     MongoDB.db = MongoDB.client[database_name]
