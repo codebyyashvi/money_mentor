@@ -1,9 +1,12 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from typing import Optional, List
+import io
+import re
+import csv
 from bson.objectid import ObjectId
 import os
 
@@ -292,7 +295,10 @@ async def calculate_tax(
         optimization = TaxCalculator.calculate_tax_optimization(tax_input)
         
         # Get AI recommendations
-        tax_data = tax_input.dict()
+        try:
+            tax_data = tax_input.model_dump(by_alias=True)
+        except AttributeError:
+            tax_data = tax_input.dict(by_alias=True)
         ai_recommendations = ai_advisor.get_tax_recommendations(tax_data)
         
         # Add AI recommendations to opportunities
@@ -319,6 +325,286 @@ async def calculate_tax(
 
 # ===================== PORTFOLIO X-RAY ENDPOINTS =====================
 
+def _parse_holdings_from_statement_text(statement_text: str) -> List[dict]:
+    """Best-effort parser for CAMS/KFin style text exports."""
+    def _to_float(value: str) -> float:
+        cleaned = re.sub(r"[^0-9.\-]", "", (value or "").strip())
+        return float(cleaned) if cleaned else 0.0
+
+    blocked_words = {
+        "folio",
+        "isin",
+        "statement",
+        "investor",
+        "transaction",
+        "pan",
+        "amc",
+        "advisor",
+        "date",
+    }
+
+    holdings = []
+    pattern_units_nav_value = re.compile(
+        r"^(?P<name>.+?)\s+(?P<units>\d[\d,]*\.?\d*)\s+(?P<nav>\d[\d,]*\.?\d*)\s+(?P<value>\d[\d,]*\.?\d*)\s*$"
+    )
+    pattern_nav_value = re.compile(
+        r"^(?P<name>.+?)\s+(?P<nav>\d[\d,]*\.?\d*)\s+(?P<value>\d[\d,]*\.?\d*)\s*$"
+    )
+
+    for raw_line in statement_text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if len(line) < 12:
+            continue
+
+        lowered = line.lower()
+        if any(word in lowered for word in blocked_words):
+            continue
+
+        match = pattern_units_nav_value.match(line)
+        if match:
+            name = match.group("name").strip(" -")
+            units = _to_float(match.group("units"))
+            nav = _to_float(match.group("nav"))
+            value = _to_float(match.group("value"))
+        else:
+            match = pattern_nav_value.match(line)
+            if match:
+                name = match.group("name").strip(" -")
+                nav = _to_float(match.group("nav"))
+                value = _to_float(match.group("value"))
+                units = value / nav if nav > 0 else 0
+            else:
+                # Generic numeric fallback for inconsistent statement layouts.
+                numeric_tokens = re.findall(r"\d[\d,]*\.?\d*", line)
+                if len(numeric_tokens) < 1:
+                    continue
+
+                first_num = re.search(r"\d", line)
+                name = line[: first_num.start()].strip(" -") if first_num else ""
+                if not name:
+                    continue
+
+                values = [_to_float(token) for token in numeric_tokens if _to_float(token) > 0]
+                if not values:
+                    continue
+
+                if len(values) >= 3:
+                    units, nav, value = values[-3], values[-2], values[-1]
+                elif len(values) == 2:
+                    second_last, last = values[-2], values[-1]
+                    value = last
+                    if second_last > 1000:
+                        units = second_last
+                        nav = value / units if units > 0 else 0
+                    else:
+                        nav = second_last
+                        units = value / nav if nav > 0 else 0
+                else:
+                    value = values[-1]
+                    nav = 1
+                    units = value
+
+        if not name or len(name) < 4 or not re.search(r"[A-Za-z]", name):
+            continue
+        if units <= 0 or nav <= 0:
+            continue
+        if nav > 1000000:
+            continue
+
+        holdings.append(
+            {
+                "name": name,
+                "units": units,
+                "nav": nav,
+                # Statement text rarely has lot-level purchase NAV; use current NAV as neutral fallback.
+                "purchase_price": nav,
+                "purchase_date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "sector": "Unknown",
+            }
+        )
+
+    # Aggregate by scheme name across folios to avoid dropping valid rows.
+    dedup = {}
+    for h in holdings:
+        existing = dedup.get(h["name"])
+        if not existing:
+            dedup[h["name"]] = {
+                **h,
+                "_total_value": h["units"] * h["nav"],
+            }
+            continue
+
+        existing["units"] += h["units"]
+        existing["_total_value"] += h["units"] * h["nav"]
+        existing["nav"] = existing["_total_value"] / max(existing["units"], 1)
+
+    result = []
+    for name, row in dedup.items():
+        row.pop("_total_value", None)
+        row["name"] = name
+        result.append(row)
+
+    return result
+
+
+def _parse_holdings_from_csv_text(csv_text: str) -> List[dict]:
+    """Parse structured CSV holdings with flexible header names."""
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    if not rows:
+        return []
+
+    def _normalize_key(key: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", (key or "").lower())
+
+    parsed = []
+    for row in rows:
+        normalized = {_normalize_key(k): v for k, v in row.items()}
+
+        name = (
+            normalized.get("name")
+            or normalized.get("fundname")
+            or normalized.get("schemename")
+            or ""
+        ).strip()
+        units = float(re.sub(r"[^0-9.\-]", "", normalized.get("units", "") or "0") or 0)
+        nav = float(re.sub(r"[^0-9.\-]", "", normalized.get("nav", "") or "0") or 0)
+        purchase_price = float(
+            re.sub(r"[^0-9.\-]", "", normalized.get("purchaseprice", normalized.get("buynav", "")) or "0") or 0
+        )
+        purchase_date = (
+            normalized.get("purchasedate")
+            or normalized.get("buydate")
+            or normalized.get("transactiondate")
+            or datetime.utcnow().strftime("%Y-%m-%d")
+        )
+        sector = normalized.get("sector") or normalized.get("category") or "Unknown"
+
+        if not name or units <= 0 or nav <= 0:
+            continue
+
+        parsed.append(
+            {
+                "name": name,
+                "units": units,
+                "nav": nav,
+                "purchase_price": purchase_price if purchase_price > 0 else nav,
+                "purchase_date": purchase_date,
+                "sector": sector,
+            }
+        )
+
+    return parsed
+
+
+def _extract_text_from_pdf_content(content: bytes) -> str:
+    """Extract text from PDF using multiple parsers for better compatibility."""
+    extracted_text = ""
+
+    # Primary parser: pypdf
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(content))
+        extracted_text = "\n".join((page.extract_text() or "") for page in reader.pages)
+    except Exception:
+        extracted_text = ""
+
+    if extracted_text.strip():
+        return extracted_text
+
+    # Fallback parser: PyMuPDF (handles many PDFs where pypdf returns empty text)
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(stream=content, filetype="pdf")
+        pages = []
+        for page in doc:
+            pages.append(page.get_text("text") or "")
+        extracted_text = "\n".join(pages)
+        doc.close()
+    except Exception:
+        extracted_text = ""
+
+    return extracted_text
+
+
+async def _build_portfolio_analysis(holdings: List[dict], user_id: str) -> XRayAnalysis:
+    """Create portfolio x-ray analysis and persist it."""
+    # Calculate totals
+    total_value = sum(h["units"] * h["nav"] for h in holdings)
+    total_invested = sum(h["units"] * (h.get("purchase_price") or h["nav"]) for h in holdings)
+    total_gain = total_value - total_invested
+
+    # Calculate XIRR (simplified)
+    xirr = PortfolioAnalyzer.calculate_xirr_simple(
+        [{"amount": total_invested}],
+        total_value,
+        365,
+    )
+
+    # Holdings analysis
+    holdings_analysis = []
+    for holding in holdings:
+        holding_value = holding["units"] * holding["nav"]
+        holdings_analysis.append(
+            {
+                "name": holding["name"],
+                "value": holding_value,
+                "allocation_percent": (holding_value / (total_value + 1)) * 100,
+                "units": holding["units"],
+                "nav": holding["nav"],
+                "category": holding.get("category") or holding.get("sector", "Unknown"),
+                "performance": holding.get("performance", 0),
+            }
+        )
+
+    # Overlap analysis
+    overlap_analysis = PortfolioAnalyzer.detect_overlaps(holdings)
+
+    # Sector allocation
+    sector_allocation = {}
+    for holding in holdings_analysis:
+        sector = holding["category"]
+        if sector not in sector_allocation:
+            sector_allocation[sector] = 0
+        sector_allocation[sector] += holding["allocation_percent"]
+
+    # Rebalancing recommendations
+    rebalancing = []
+    for h in holdings_analysis:
+        if h["allocation_percent"] > 30:
+            rebalancing.append(
+                {
+                    "fund": h["name"],
+                    "current_allocation": h["allocation_percent"],
+                    "recommended_allocation": 20,
+                    "action": "REDUCE",
+                }
+            )
+
+    analysis = XRayAnalysis(
+        total_value=total_value,
+        total_invested=total_invested,
+        total_gain=total_gain,
+        xirr=xirr,
+        holdings_analysis=holdings_analysis,
+        overlap_analysis=overlap_analysis,
+        sector_allocation=sector_allocation,
+        expense_ratio_drag={"avg_er": 1.2, "drag": 0.012},
+        benchmark_comparison={"benchmark": "Sensex", "outperformance": 2.5},
+        rebalancing_recommendations=rebalancing,
+    )
+
+    db = get_db()
+    xray_doc = {
+        "user_id": user_id,
+        "analysis": analysis.dict(),
+        "analyzed_at": datetime.utcnow(),
+    }
+    await db.portfolio_xrays.insert_one(xray_doc)
+
+    return analysis
+
 @app.post("/api/portfolio/xray", response_model=XRayAnalysis)
 async def analyze_portfolio(
     portfolio_input: PortfolioXRayInput,
@@ -327,82 +613,55 @@ async def analyze_portfolio(
     """Analyze mutual fund portfolio"""
     try:
         holdings = [h.dict() for h in portfolio_input.holdings]
-        
-        # Calculate totals
-        total_value = sum(h["units"] * h["nav"] for h in holdings)
-        total_invested = sum(h["units"] * h["purchase_price"] for h in holdings if "purchase_price" in h)
-        total_gain = total_value - total_invested
-        
-        # Calculate XIRR (simplified)
-        xirr = PortfolioAnalyzer.calculate_xirr_simple(
-            [{"amount": total_invested}],
-            total_value,
-            365
-        )
-        
-        # Holdings analysis
-        holdings_analysis = []
-        for holding in holdings:
-            holding_value = holding["units"] * holding["nav"]
-            holdings_analysis.append({
-                "name": holding["name"],
-                "value": holding_value,
-                "allocation_percent": (holding_value / (total_value + 1)) * 100,
-                "units": holding["units"],
-                "nav": holding["nav"],
-                "category": holding.get("category", "Unknown"),
-                "performance": holding.get("performance", 0)
-            })
-        
-        # Overlap analysis
-        overlap_analysis = PortfolioAnalyzer.detect_overlaps(holdings)
-        
-        # Sector allocation
-        sector_allocation = {}
-        for holding in holdings_analysis:
-            sector = holding["category"]
-            if sector not in sector_allocation:
-                sector_allocation[sector] = 0
-            sector_allocation[sector] += holding["allocation_percent"]
-        
-        # Rebalancing recommendations
-        rebalancing = []
-        for h in holdings_analysis:
-            if h["allocation_percent"] > 30:
-                rebalancing.append({
-                    "fund": h["name"],
-                    "current_allocation": h["allocation_percent"],
-                    "recommended_allocation": 20,
-                    "action": "REDUCE"
-                })
-        
-        analysis = XRayAnalysis(
-            total_value=total_value,
-            total_invested=total_invested,
-            total_gain=total_gain,
-            xirr=xirr,
-            holdings_analysis=holdings_analysis,
-            overlap_analysis=overlap_analysis,
-            sector_allocation=sector_allocation,
-            expense_ratio_drag={"avg_er": 1.2, "drag": 0.012},
-            benchmark_comparison={"benchmark": "Sensex", "outperformance": 2.5},
-            rebalancing_recommendations=rebalancing
-        )
-        
-        # Save to database
-        db = get_db()
-        xray_doc = {
-            "user_id": user_id,
-            "analysis": analysis.dict(),
-            "analyzed_at": datetime.utcnow()
-        }
-        await db.portfolio_xrays.insert_one(xray_doc)
-        
-        return analysis
+        return await _build_portfolio_analysis(holdings, user_id)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
+        )
+
+
+@app.post("/api/portfolio/xray/upload", response_model=XRayAnalysis)
+async def analyze_portfolio_statement(
+    statement: UploadFile = File(...),
+    user_id: str = Depends(get_current_user),
+):
+    """Analyze portfolio by uploading CAMS/KFin statement file (PDF or CSV)."""
+    try:
+        filename = (statement.filename or "").lower()
+        content = await statement.read()
+
+        if not content:
+            raise ValueError("Uploaded statement file is empty")
+
+        text = ""
+        if filename.endswith(".pdf"):
+            text = _extract_text_from_pdf_content(content)
+
+            if not text.strip():
+                raise ValueError(
+                    "Could not extract text from this PDF. It may be image-scanned, encrypted, or in an unsupported layout. Try a text-based CAMS/KFin consolidated statement PDF or use CSV/manual entry."
+                )
+
+            holdings = _parse_holdings_from_statement_text(text)
+        elif filename.endswith(".csv"):
+            text = content.decode("utf-8", errors="ignore")
+            holdings = _parse_holdings_from_csv_text(text)
+        else:
+            raise ValueError("Unsupported file type. Please upload a .pdf or .csv statement.")
+
+        if not holdings:
+            raise ValueError(
+                "Could not detect holdings from statement. Use a CAMS/KFin consolidated statement or enter holdings manually."
+            )
+
+        return await _build_portfolio_analysis(holdings, user_id)
+    except Exception as e:
+        print(f"Portfolio statement upload error: {e}")
+        error_message = str(e).strip() or f"{type(e).__name__} while parsing uploaded statement"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error_message,
         )
 
 # ===================== LIFE EVENT ADVISOR ENDPOINTS =====================

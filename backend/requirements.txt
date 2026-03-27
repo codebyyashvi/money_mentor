@@ -14,3 +14,5 @@ groq
 numpy
 PyJWT
 email-validator
+pypdf
+PyMuPDF

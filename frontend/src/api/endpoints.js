@@ -44,6 +44,11 @@ export const taxAPI = {
 export const portfolioAPI = {
   xray: (portfolioData) =>
     apiClient.post('/portfolio/xray', portfolioData),
+  xrayFromStatement: (statementFile) => {
+    const formData = new FormData();
+    formData.append('statement', statementFile);
+    return apiClient.post('/portfolio/xray/upload', formData);
+  },
 };
 
 export const lifeEventAPI = {

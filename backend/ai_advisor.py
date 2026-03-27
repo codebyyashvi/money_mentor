@@ -58,14 +58,32 @@ Provide 3-4 specific, actionable recommendations for this person to achieve FIRE
         """Get AI recommendations for tax optimization"""
         if not self.is_available():
             return self._get_fallback_tax_recommendations(tax_data)
+
+        def get_number(*keys: str) -> float:
+            for key in keys:
+                value = tax_data.get(key)
+                if value is None:
+                    continue
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    continue
+            return 0.0
+
+        salary = get_number("salary")
+        bonus = get_number("bonus")
+        capital_gains = get_number("capital_gains", "capitalGains")
+        investments_80c = get_number("80c_investments", "section_80c_investments")
+        insurance_80d = get_number("80d_health_insurance", "section_80d_health_insurance")
+        hra_exemption = get_number("hra_exemption", "hraExemption")
         
         prompt = f"""Based on this tax profile:
-- Annual salary: ₹{tax_data.get('salary'):,.0f}
-- Bonus: ₹{tax_data.get('bonus'):,.0f}
-- Capital gains: ₹{tax_data.get('capital_gains'):,.0f}
-- Current 80C investments: ₹{tax_data.get('80c_investments'):,.0f}
-- Current health insurance: ₹{tax_data.get('80d_health_insurance'):,.0f}
-- HRA exemption claimed: {tax_data.get('hra_exemption', 0) > 0}
+- Annual salary: ₹{salary:,.0f}
+- Bonus: ₹{bonus:,.0f}
+- Capital gains: ₹{capital_gains:,.0f}
+- Current 80C investments: ₹{investments_80c:,.0f}
+- Current health insurance: ₹{insurance_80d:,.0f}
+- HRA exemption claimed: {hra_exemption > 0}
 
 Provide 4-5 specific tax-saving strategies tailored to this income level. Format as a numbered list with brief explanations."""
         

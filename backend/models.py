@@ -158,8 +158,8 @@ class MFHolding(BaseModel):
     name: str
     units: float
     nav: float
-    purchase_price: float
-    purchase_date: str
+    purchase_price: Optional[float] = 0
+    purchase_date: Optional[str] = None
     sector: Optional[str] = None
 
 class PortfolioXRayInput(BaseModel):

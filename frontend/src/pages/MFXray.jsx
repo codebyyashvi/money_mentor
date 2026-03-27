@@ -1,108 +1,240 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
+import { portfolioAPI } from "../api";
+import { useAuth } from "../context/AuthContext";
+
+const createEmptyHolding = () => ({
+  name: "",
+  units: "",
+  nav: "",
+  purchase_price: "",
+  purchase_date: "",
+  sector: "",
+});
+
+const sampleHoldings = [
+  {
+    name: "SBI Bluechip Fund",
+    units: 8500,
+    nav: 61.18,
+    purchase_price: 45.5,
+    purchase_date: "2022-01-10",
+    sector: "Large Cap",
+  },
+  {
+    name: "Axis Midcap Fund",
+    units: 6200,
+    nav: 61.29,
+    purchase_price: 40,
+    purchase_date: "2021-08-15",
+    sector: "Mid Cap",
+  },
+  {
+    name: "ICICI Balanced Advantage",
+    units: 4100,
+    nav: 109.76,
+    purchase_price: 85,
+    purchase_date: "2020-02-12",
+    sector: "Balanced",
+  },
+];
+
+const normalizeKey = (key = "") =>
+  key
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "_");
+
+const parseCsvText = (text) => {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) {
+    throw new Error("CSV needs a header row and at least one holding row.");
+  }
+
+  const headers = lines[0].split(",").map((h) => normalizeKey(h));
+  const findIndex = (...possibleKeys) =>
+    headers.findIndex((h) => possibleKeys.some((k) => h === normalizeKey(k)));
+
+  const idx = {
+    name: findIndex("name", "fund_name", "scheme_name"),
+    units: findIndex("units", "unit"),
+    nav: findIndex("nav", "current_nav"),
+    purchase_price: findIndex("purchase_price", "buy_nav", "cost_nav", "avg_nav"),
+    purchase_date: findIndex("purchase_date", "buy_date", "transaction_date", "date"),
+    sector: findIndex("sector", "category", "fund_category"),
+  };
+
+  if ([idx.name, idx.units, idx.nav, idx.purchase_price, idx.purchase_date].some((v) => v < 0)) {
+    throw new Error(
+      "CSV must contain columns: name, units, nav, purchase_price, purchase_date (optional: sector/category)."
+    );
+  }
+
+  return lines.slice(1).map((line) => {
+    const cols = line.split(",").map((c) => c.trim());
+    return {
+      name: cols[idx.name] || "",
+      units: cols[idx.units] || "",
+      nav: cols[idx.nav] || "",
+      purchase_price: cols[idx.purchase_price] || "",
+      purchase_date: cols[idx.purchase_date] || "",
+      sector: idx.sector >= 0 ? cols[idx.sector] || "" : "",
+    };
+  });
+};
 
 export default function MFXray() {
-  const [uploadFile, setUploadFile] = useState(null);
-  const [analysis, setAnalysis] = useState(null);
+  const { user } = useAuth();
+  const navigate = useNavigate();
 
-  const mockAnalysis = {
-    totalValue: 1850000,
-    xirr: 12.5,
-    investedAmount: 1450000,
-    gain: 400000,
-    holdings: [
-      {
-        name: "SBI Bluechip Fund",
-        value: 520000,
-        units: 8500,
-        nav: 61.18,
-        allocationPercent: 28,
-        er: 0.76,
-        category: "Large Cap",
-        performance: 13.2
-      },
-      {
-        name: "Axis Midcap Fund",
-        value: 380000,
-        units: 6200,
-        nav: 61.29,
-        allocationPercent: 20.5,
-        er: 1.42,
-        category: "Mid Cap",
-        performance: 18.5
-      },
-      {
-        name: "ICICI Balanced Advantage",
-        value: 450000,
-        units: 4100,
-        nav: 109.76,
-        allocationPercent: 24.3,
-        er: 0.93,
-        category: "Balanced",
-        performance: 14.8
-      },
-      {
-        name: "DSP Small Cap Fund",
-        value: 320000,
-        units: 2800,
-        nav: 114.29,
-        allocationPercent: 17.3,
-        er: 1.87,
-        category: "Small Cap",
-        performance: 22.1
-      },
-      {
-        name: "Liquid Bees",
-        value: 180000,
-        units: 18000,
-        nav: 10,
-        allocationPercent: 9.9,
-        er: 0.003,
-        category: "Liquid",
-        performance: 6.5
-      }
-    ],
-    overlaps: [
-      { funds: ["SBI Bluechip", "ICICI Balanced"], overlap: 15, commonHoldings: "HDFC, Infosys" }
-    ],
-    benchmarkComparison: [
-      { name: "Nifty 50", return: 11.5 },
-      { name: "Sensex", return: 10.8 },
-      { name: "Your Portfolio", return: 12.5 }
-    ],
-    topRecommendations: [
-      {
-        id: 1,
-        title: "Reduce Expense Ratio Drag",
-        desc: "Replace DSP Small Cap (ER: 1.87%) with Quant Small Cap (ER: 0.45%)",
-        savings: "₹2,500 annually",
-        priority: "high"
-      },
-      {
-        id: 2,
-        title: "Optimize Asset Allocation",
-        desc: "Rebalance to 50% Large Cap, 30% Mid Cap, 20% Liquid",
-        impact: "Better risk-adjusted returns",
-        priority: "medium"
-      },
-      {
-        id: 3,
-        title: "Eliminate Overlap",
-        desc: "Reduce holdings overlap by selling ICICI Balanced Advantage",
-        impact: "Better diversification",
-        priority: "medium"
-      }
-    ]
+  const [holdings, setHoldings] = useState([createEmptyHolding()]);
+  const [analysis, setAnalysis] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!user) {
+      navigate("/");
+    }
+  }, [user, navigate]);
+
+  const formatInr = (value) =>
+    new Intl.NumberFormat("en-IN", {
+      style: "currency",
+      currency: "INR",
+      maximumFractionDigits: 0,
+    }).format(value || 0);
+
+  const validHoldings = useMemo(
+    () =>
+      holdings.filter(
+        (h) =>
+          h.name &&
+          Number(h.units) > 0 &&
+          Number(h.nav) > 0 &&
+          Number(h.purchase_price) >= 0 &&
+          h.purchase_date
+      ),
+    [holdings]
+  );
+
+  const updateHolding = (index, key, value) => {
+    setHoldings((prev) =>
+      prev.map((holding, idx) => (idx === index ? { ...holding, [key]: value } : holding))
+    );
   };
 
-  const handleFileUpload = (e) => {
+  const addHolding = () => {
+    setHoldings((prev) => [...prev, createEmptyHolding()]);
+  };
+
+  const removeHolding = (index) => {
+    setHoldings((prev) => {
+      const next = prev.filter((_, idx) => idx !== index);
+      return next.length > 0 ? next : [createEmptyHolding()];
+    });
+  };
+
+  const loadSampleData = () => {
+    setError(null);
+    setAnalysis(null);
+    setHoldings(
+      sampleHoldings.map((h) => ({
+        ...h,
+        units: String(h.units),
+        nav: String(h.nav),
+        purchase_price: String(h.purchase_price),
+      }))
+    );
+  };
+
+  const handleStatementUpload = async (e) => {
     const file = e.target.files?.[0];
-    if (file) {
-      setUploadFile(file);
-      // Simulate analysis
-      setTimeout(() => setAnalysis(mockAnalysis), 1000);
+    if (!file) return;
+
+    setError(null);
+    setAnalysis(null);
+
+    const fileName = (file.name || "").toLowerCase();
+    if (!fileName.endsWith(".csv") && !fileName.endsWith(".pdf")) {
+      setError("Please upload a CAMS/KFin statement in PDF format or a CSV file.");
+      return;
+    }
+
+    try {
+      if (fileName.endsWith(".pdf")) {
+        setLoading(true);
+        const response = await portfolioAPI.xrayFromStatement(file);
+        setAnalysis(response);
+      } else {
+        const text = await file.text();
+        const parsed = parseCsvText(text);
+        setHoldings(parsed);
+      }
+    } catch (err) {
+      const detailFromArray = Array.isArray(err?.data?.detail)
+        ? err.data.detail.map((x) => x?.msg || JSON.stringify(x)).join("; ")
+        : null;
+      const detailFromObject =
+        err?.data?.detail && typeof err.data.detail === "object"
+          ? JSON.stringify(err.data.detail)
+          : null;
+      const detailFromString =
+        typeof err?.data === "string" ? err.data : null;
+
+      setError(
+        detailFromArray ||
+          detailFromObject ||
+          err?.data?.detail ||
+          err?.data?.message ||
+          detailFromString ||
+          err.message ||
+          "Could not process uploaded statement."
+      );
+    } finally {
+      setLoading(false);
     }
   };
+
+  const runXray = async () => {
+    if (validHoldings.length === 0) {
+      setError("Add at least one valid holding before running Portfolio X-Ray.");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    const payload = {
+      holdings: validHoldings.map((h) => ({
+        name: h.name.trim(),
+        units: Number(h.units),
+        nav: Number(h.nav),
+        purchase_price: Number(h.purchase_price),
+        purchase_date: h.purchase_date,
+        sector: h.sector?.trim() || undefined,
+      })),
+      cams_statement_text: null,
+    };
+
+    try {
+      const response = await portfolioAPI.xray(payload);
+      setAnalysis(response);
+    } catch (err) {
+      setError(err.message || "Portfolio analysis failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const overlaps = analysis?.overlap_analysis?.overlaps || [];
+  const sectorAllocation = analysis?.sector_allocation || {};
+  const benchmark = analysis?.benchmark_comparison || {};
 
   return (
     <div className="bg-gradient-midnight min-h-screen pb-20">
@@ -110,191 +242,244 @@ export default function MFXray() {
 
       <div className="max-w-7xl mx-auto px-6 py-12">
         <h1 className="section-title mb-2">Portfolio X-Ray</h1>
-        <p className="section-subtitle">Deep dive analysis of your mutual fund portfolio</p>
+        <p className="section-subtitle">Upload holdings, run real analysis, and get actionable rebalancing insights</p>
 
-        {!analysis ? (
-          <div className="card max-w-2xl mx-auto">
-            <div className="text-center py-12">
-              <div className="text-6xl mb-4">📁</div>
-              <h2 className="text-2xl font-bold mb-2">Upload Your Portfolio Statement</h2>
-              <p className="text-secondary-400 mb-8">Paste CAMS or KFintech statements for instant analysis</p>
-
-              <div className="border-2 border-dashed border-secondary-600 rounded-xl p-8 mb-6 hover:border-primary-500 transition-colors cursor-pointer">
-                <input
-                  type="file"
-                  onChange={handleFileUpload}
-                  accept=".pdf,.csv,.jpg,.png"
-                  className="hidden"
-                  id="file-input"
-                />
-                <label htmlFor="file-input" className="cursor-pointer">
-                  <p className="text-secondary-300 mb-2">Click to upload or drag and drop</p>
-                  <p className="text-secondary-500 text-sm">PDF, Image, or CSV (max 10MB)</p>
-                </label>
-              </div>
-
-              <button onClick={() => setAnalysis(mockAnalysis)} className="btn-primary">
-                Try Demo Analysis
-              </button>
-
-              <p className="text-secondary-400 text-sm mt-6">
-                Your data is encrypted and processed securely
-              </p>
-            </div>
+        {error && (
+          <div className="mt-6 mb-8 p-4 bg-red-900/20 border border-red-500 rounded text-red-300 text-sm">
+            {error}
           </div>
-        ) : (
+        )}
+
+        <div className="card mb-8">
+          <div className="flex flex-wrap items-center gap-3 mb-5">
+            <input
+              type="file"
+              accept=".pdf,.csv"
+              onChange={handleStatementUpload}
+              className="text-sm text-secondary-300"
+            />
+            <button onClick={loadSampleData} className="btn-secondary text-sm">
+              Load Sample Holdings
+            </button>
+            <button onClick={addHolding} className="btn-secondary text-sm">
+              Add Holding Row
+            </button>
+            <button onClick={runXray} disabled={loading} className="btn-primary text-sm disabled:opacity-50">
+              {loading ? "Analyzing..." : "Run Portfolio X-Ray"}
+            </button>
+          </div>
+
+          <p className="text-secondary-400 text-sm mb-4">
+            Upload CAMS/KFin PDF directly for automatic extraction, or use CSV/manual entry for precise control.
+          </p>
+
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-secondary-400 border-b border-secondary-700">
+                  <th className="py-2 pr-4">Fund Name</th>
+                  <th className="py-2 pr-4">Units</th>
+                  <th className="py-2 pr-4">NAV</th>
+                  <th className="py-2 pr-4">Purchase Price</th>
+                  <th className="py-2 pr-4">Purchase Date</th>
+                  <th className="py-2 pr-4">Category</th>
+                  <th className="py-2">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {holdings.map((holding, idx) => (
+                  <tr key={idx} className="border-b border-secondary-800/60">
+                    <td className="py-2 pr-4 min-w-[220px]">
+                      <input
+                        value={holding.name}
+                        onChange={(e) => updateHolding(idx, "name", e.target.value)}
+                        className="input-field"
+                        placeholder="Fund name"
+                      />
+                    </td>
+                    <td className="py-2 pr-4 min-w-[120px]">
+                      <input
+                        type="number"
+                        value={holding.units}
+                        onChange={(e) => updateHolding(idx, "units", e.target.value)}
+                        className="input-field"
+                        placeholder="0"
+                      />
+                    </td>
+                    <td className="py-2 pr-4 min-w-[120px]">
+                      <input
+                        type="number"
+                        value={holding.nav}
+                        onChange={(e) => updateHolding(idx, "nav", e.target.value)}
+                        className="input-field"
+                        placeholder="0"
+                      />
+                    </td>
+                    <td className="py-2 pr-4 min-w-[140px]">
+                      <input
+                        type="number"
+                        value={holding.purchase_price}
+                        onChange={(e) => updateHolding(idx, "purchase_price", e.target.value)}
+                        className="input-field"
+                        placeholder="0"
+                      />
+                    </td>
+                    <td className="py-2 pr-4 min-w-[180px]">
+                      <input
+                        type="date"
+                        value={holding.purchase_date}
+                        onChange={(e) => updateHolding(idx, "purchase_date", e.target.value)}
+                        className="input-field"
+                      />
+                    </td>
+                    <td className="py-2 pr-4 min-w-[160px]">
+                      <input
+                        value={holding.sector}
+                        onChange={(e) => updateHolding(idx, "sector", e.target.value)}
+                        className="input-field"
+                        placeholder="Large Cap"
+                      />
+                    </td>
+                    <td className="py-2 text-center">
+                      <button
+                        onClick={() => removeHolding(idx)}
+                        className="text-red-400 hover:text-red-300 text-xs"
+                        type="button"
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {analysis && (
           <div className="space-y-8">
-            {/* Portfolio Summary */}
             <div className="grid md:grid-cols-4 gap-4">
               <div className="card">
                 <p className="text-secondary-400 text-sm mb-1">Total Portfolio Value</p>
-                <p className="text-3xl font-bold text-primary-400">₹{(analysis.totalValue / 100000).toFixed(2)}L</p>
+                <p className="text-2xl font-bold text-primary-400">{formatInr(analysis.total_value)}</p>
               </div>
               <div className="card">
-                <p className="text-secondary-400 text-sm mb-1">Extended IRR (XIRR)</p>
-                <p className="text-3xl font-bold text-green-400">{analysis.xirr}%</p>
+                <p className="text-secondary-400 text-sm mb-1">Total Invested</p>
+                <p className="text-2xl font-bold text-blue-400">{formatInr(analysis.total_invested)}</p>
               </div>
               <div className="card">
                 <p className="text-secondary-400 text-sm mb-1">Total Gain</p>
-                <p className="text-3xl font-bold text-accent-400">₹{(analysis.gain / 100000).toFixed(2)}L</p>
+                <p className="text-2xl font-bold text-accent-400">{formatInr(analysis.total_gain)}</p>
               </div>
               <div className="card">
-                <p className="text-secondary-400 text-sm mb-1">Return on Investment</p>
-                <p className="text-3xl font-bold text-yellow-400">
-                  {((analysis.gain / analysis.investedAmount) * 100).toFixed(1)}%
-                </p>
+                <p className="text-secondary-400 text-sm mb-1">XIRR</p>
+                <p className="text-2xl font-bold text-green-400">{Number(analysis.xirr || 0).toFixed(2)}%</p>
               </div>
             </div>
 
-            {/* Holdings Breakdown */}
             <div className="card">
-              <h2 className="text-2xl font-bold mb-6">Your Holdings</h2>
+              <h2 className="text-2xl font-bold mb-6">Holdings Analysis</h2>
               <div className="space-y-4">
-                {analysis.holdings.map((holding, idx) => (
+                {(analysis.holdings_analysis || []).map((holding, idx) => (
                   <div key={idx} className="border border-secondary-700 rounded-lg p-4">
                     <div className="flex items-start justify-between mb-3">
-                      <div className="flex-1">
+                      <div>
                         <h3 className="font-bold">{holding.name}</h3>
-                        <p className="text-xs text-secondary-400">{holding.category}</p>
+                        <p className="text-xs text-secondary-400">{holding.category || "Unknown"}</p>
                       </div>
                       <div className="text-right">
-                        <p className="font-bold text-primary-400">₹{(holding.value / 100000).toFixed(2)}L</p>
-                        <p className="text-xs text-secondary-400">{holding.allocationPercent}%</p>
+                        <p className="font-bold text-primary-400">{formatInr(holding.value)}</p>
+                        <p className="text-xs text-secondary-400">{Number(holding.allocation_percent || 0).toFixed(1)}%</p>
                       </div>
                     </div>
 
-                    <div className="grid md:grid-cols-5 gap-4 mb-3 pb-3 border-b border-secondary-700 text-sm">
+                    <div className="grid md:grid-cols-4 gap-4 text-sm">
                       <div>
                         <p className="text-secondary-400 text-xs">Units</p>
                         <p className="font-semibold">{holding.units}</p>
                       </div>
                       <div>
                         <p className="text-secondary-400 text-xs">NAV</p>
-                        <p className="font-semibold">₹{holding.nav}</p>
+                        <p className="font-semibold">{formatInr(holding.nav)}</p>
                       </div>
                       <div>
-                        <p className="text-secondary-400 text-xs">Expense Ratio</p>
-                        <p className="font-semibold">{holding.er}%</p>
+                        <p className="text-secondary-400 text-xs">Allocation</p>
+                        <p className="font-semibold text-accent-400">{Number(holding.allocation_percent || 0).toFixed(2)}%</p>
                       </div>
                       <div>
-                        <p className="text-secondary-400 text-xs">1Y Performance</p>
-                        <p className="font-semibold text-green-400">{holding.performance}%</p>
+                        <p className="text-secondary-400 text-xs">Performance</p>
+                        <p className="font-semibold">{Number(holding.performance || 0).toFixed(2)}%</p>
                       </div>
-                      <div>
-                        <p className="text-secondary-400 text-xs">Allocation %</p>
-                        <p className="font-semibold text-accent-400">{holding.allocationPercent}%</p>
-                      </div>
-                    </div>
-
-                    <div className="w-full bg-secondary-700 rounded-full h-2">
-                      <div
-                        className="h-2 rounded-full bg-gradient-to-r from-primary-500 to-accent-500"
-                        style={{ width: `${holding.allocationPercent}%` }}
-                      />
                     </div>
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* Benchmark Comparison */}
             <div className="grid md:grid-cols-2 gap-8">
               <div className="card">
-                <h3 className="text-xl font-bold mb-6">Performance vs Benchmarks</h3>
-                <div className="space-y-4">
-                  {analysis.benchmarkComparison.map((bench, idx) => (
-                    <div key={idx}>
-                      <div className="flex justify-between items-center mb-2">
-                        <span className="font-semibold">{bench.name}</span>
-                        <span className={`font-bold ${idx === 2 ? 'text-primary-400' : 'text-secondary-400'}`}>
-                          {bench.return}%
-                        </span>
-                      </div>
-                      <div className="w-full bg-secondary-700 rounded-full h-3">
-                        <div
-                          className={`h-3 rounded-full ${idx === 2 ? 'bg-gradient-to-r from-primary-500 to-accent-500' : 'bg-secondary-600'}`}
-                          style={{ width: `${(bench.return / 15) * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="card">
-                <h3 className="text-xl font-bold mb-6">Overlap Analysis</h3>
-                {analysis.overlaps.length > 0 ? (
+                <h3 className="text-xl font-bold mb-4">Overlap Analysis</h3>
+                {overlaps.length === 0 ? (
+                  <p className="text-secondary-300">No major category overlaps found.</p>
+                ) : (
                   <div className="space-y-3">
-                    {analysis.overlaps.map((overlap, idx) => (
+                    {overlaps.map((overlap, idx) => (
                       <div key={idx} className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                        <p className="text-sm font-semibold mb-1">
-                          {overlap.funds.join(" & ") } - {overlap.overlap}% Overlap
-                        </p>
-                        <p className="text-xs text-secondary-400">
-                          Common holdings: {overlap.commonHoldings}
-                        </p>
+                        <p className="font-semibold text-sm mb-1">{overlap.category}</p>
+                        <p className="text-xs text-secondary-300 mb-1">Funds: {(overlap.funds || []).join(", ")}</p>
+                        <p className="text-xs text-secondary-400">{overlap.recommendation}</p>
                       </div>
                     ))}
                   </div>
-                ) : (
-                  <p className="text-secondary-400">No significant overlaps detected ✓</p>
                 )}
               </div>
-            </div>
 
-            {/* Recommendations */}
-            <div className="card">
-              <h2 className="text-2xl font-bold mb-6">AI Recommendations</h2>
-              <div className="space-y-4">
-                {analysis.topRecommendations.map((rec) => (
-                  <div
-                    key={rec.id}
-                    className={`p-4 border-l-4 rounded-lg ${
-                      rec.priority === "high"
-                        ? "border-l-red-500 bg-red-500/5"
-                        : "border-l-yellow-500 bg-yellow-500/5"
-                    }`}
-                  >
-                    <div className="flex justify-between items-start mb-2">
-                      <h3 className="font-bold">{rec.title}</h3>
-                      <span className={`text-xs font-semibold px-2 py-1 rounded capitalize ${
-                        rec.priority === "high" ? 'bg-red-500/20 text-red-400' : 'bg-yellow-500/20 text-yellow-400'
-                      }`}>
-                        {rec.priority}
-                      </span>
-                    </div>
-                    <p className="text-secondary-400 text-sm mb-2">{rec.desc}</p>
-                    <p className="text-primary-400 font-semibold text-sm">
-                      {rec.savings || rec.impact}
-                    </p>
+              <div className="card">
+                <h3 className="text-xl font-bold mb-4">Benchmark Comparison</h3>
+                <div className="space-y-3 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-secondary-400">Benchmark</span>
+                    <span className="font-semibold">{benchmark.benchmark || "N/A"}</span>
                   </div>
-                ))}
+                  <div className="flex justify-between">
+                    <span className="text-secondary-400">Outperformance</span>
+                    <span className="font-semibold text-green-400">{Number(benchmark.outperformance || 0).toFixed(2)}%</span>
+                  </div>
+                </div>
+
+                <h4 className="text-lg font-bold mt-6 mb-3">Sector Allocation</h4>
+                <div className="space-y-2 text-sm">
+                  {Object.keys(sectorAllocation).length === 0 ? (
+                    <p className="text-secondary-300">No sector split available.</p>
+                  ) : (
+                    Object.entries(sectorAllocation).map(([sector, value]) => (
+                      <div key={sector} className="flex justify-between">
+                        <span className="text-secondary-400">{sector}</span>
+                        <span className="font-semibold">{Number(value).toFixed(2)}%</span>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             </div>
 
-            <button onClick={() => setAnalysis(null)} className="btn-secondary w-full">
-              Upload Different Statement
-            </button>
+            <div className="card">
+              <h2 className="text-2xl font-bold mb-4">Rebalancing Recommendations</h2>
+              {(analysis.rebalancing_recommendations || []).length === 0 ? (
+                <p className="text-secondary-300">No immediate rebalancing required based on current allocations.</p>
+              ) : (
+                <div className="space-y-3">
+                  {analysis.rebalancing_recommendations.map((rec, idx) => (
+                    <div key={idx} className="p-3 bg-secondary-700/30 border border-secondary-700 rounded-lg">
+                      <p className="font-semibold">{rec.fund}</p>
+                      <p className="text-sm text-secondary-300">
+                        Current: {Number(rec.current_allocation || 0).toFixed(2)}% | Target: {Number(rec.recommended_allocation || 0).toFixed(2)}% | Action: {rec.action}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
