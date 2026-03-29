@@ -32,15 +32,15 @@ python app.py
 
 Or with uvicorn directly:
 ```bash
-uvicorn app:app --reload --host 0.0.0.0 --port 5000
+uvicorn app:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The API will be available at: **http://localhost:5000**
+The API will be available at: **http://localhost:8000**
 
 ## API Documentation
 
-- **Swagger UI**: http://localhost:5000/docs
-- **ReDoc**: http://localhost:5000/redoc
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
 
 ## Available Endpoints
 
@@ -58,7 +58,7 @@ The API will be available at: **http://localhost:5000**
 - `POST /api/calculate/tax` - Calculate tax optimization
 
 ## Environment Variables
-- `PORT` - Server port (default: 5000)
+- `PORT` - Server port (default: 8000)
 - `FLASK_DEBUG` - Debug mode
 - `FLASK_ENV` - Environment (development/production)
 
